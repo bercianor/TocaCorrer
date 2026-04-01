@@ -1,0 +1,186 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Build & Release APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Full history needed for changelog generation
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission to gradlew
+        run: chmod +x gradlew
+
+      - name: Run tests
+        run: ./gradlew test
+
+      - name: Decode keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > ${{ runner.temp }}/tocacorrer.jks
+
+      - name: Build release APK
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/tocacorrer.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew assembleRelease
+
+      - name: Rename APK
+        run: |
+          TAG="${{ github.ref_name }}"
+          mv app/build/outputs/apk/release/app-release.apk \
+             app/build/outputs/apk/release/tocacorrer-${TAG}.apk
+
+      - name: Generate SHA-256 checksum
+        run: |
+          TAG="${{ github.ref_name }}"
+          cd app/build/outputs/apk/release
+          sha256sum tocacorrer-${TAG}.apk > tocacorrer-${TAG}.apk.sha256
+          cat tocacorrer-${TAG}.apk.sha256
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          CURRENT_TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
+
+          # Find the previous stable tag (excludes beta and rc — case-insensitive)
+          PREV_STABLE_TAG=$(git tag --sort=-version:refname \
+            | grep -v -i -E "(beta|rc)" \
+            | grep -v "^${CURRENT_TAG}$" \
+            | head -n 1)
+
+          echo "Current tag  : ${CURRENT_TAG}"
+          echo "Previous stable tag: ${PREV_STABLE_TAG}"
+
+          # Commit range
+          if [ -z "$PREV_STABLE_TAG" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${PREV_STABLE_TAG}..HEAD"
+          fi
+
+          # Collect commits as "HASH<TAB>SUBJECT<TAB>AUTHOR_LOGIN"
+          # %H = full hash, %s = subject, %aN = author name
+          mapfile -t COMMITS < <(git log "$RANGE" --pretty=format:"%H	%s	%aN")
+
+          # Classify by conventional commit type
+          FEAT=()
+          FIX=()
+          PERF=()
+          REFACTOR=()
+          DOCS=()
+          TEST=()
+          BUILD=()
+          CHORE=()
+          OTHER=()
+
+          declare -A CONTRIBUTORS
+
+          for entry in "${COMMITS[@]}"; do
+            HASH=$(echo "$entry" | cut -f1)
+            SUBJECT=$(echo "$entry" | cut -f2)
+            AUTHOR=$(echo "$entry" | cut -f3)
+            SHORT="${HASH:0:7}"
+            CONTRIBUTORS["$AUTHOR"]=1
+
+            # Strip scope: "feat(parser): foo" → type=feat, desc="foo"
+            CONV_RE='^([a-z]+)(\([^)]*\))?!?:[[:space:]](.+)$'
+            if [[ "$SUBJECT" =~ $CONV_RE ]]; then
+              TYPE="${BASH_REMATCH[1]}"
+              DESC="${BASH_REMATCH[3]}"
+              LINE="- ${DESC} (\`${SHORT}\`)"
+              case "$TYPE" in
+                feat)     FEAT+=("$LINE") ;;
+                fix)      FIX+=("$LINE") ;;
+                perf)     PERF+=("$LINE") ;;
+                refactor) REFACTOR+=("$LINE") ;;
+                docs)     DOCS+=("$LINE") ;;
+                test)     TEST+=("$LINE") ;;
+                build|ci) BUILD+=("$LINE") ;;
+                chore)    CHORE+=("$LINE") ;;
+                *)        OTHER+=("- ${SUBJECT} (\`${SHORT}\`)") ;;
+              esac
+            else
+              OTHER+=("- ${SUBJECT} (\`${SHORT}\`)")
+            fi
+          done
+
+          # Helper to write a section
+          write_section() {
+            local TITLE="$1"
+            shift
+            local ITEMS=("$@")
+            if [ ${#ITEMS[@]} -gt 0 ]; then
+              echo "### ${TITLE}"
+              for item in "${ITEMS[@]}"; do
+                echo "$item"
+              done
+              echo ""
+            fi
+          }
+
+          # Build the markdown
+          {
+            echo "## What's Changed"
+            echo ""
+
+            write_section "✨ New Features"    "${FEAT[@]}"
+            write_section "🐛 Bug Fixes"       "${FIX[@]}"
+            write_section "⚡ Performance"     "${PERF[@]}"
+            write_section "♻️ Refactoring"     "${REFACTOR[@]}"
+            write_section "📚 Documentation"   "${DOCS[@]}"
+            write_section "🧪 Tests"           "${TEST[@]}"
+            write_section "🔧 Build & CI"      "${BUILD[@]}"
+            write_section "🏠 Chores"          "${CHORE[@]}"
+            write_section "📦 Other Changes"   "${OTHER[@]}"
+
+            # Contributors
+            if [ ${#CONTRIBUTORS[@]} -gt 0 ]; then
+              echo "### 👥 Contributors"
+              for name in "${!CONTRIBUTORS[@]}"; do
+                echo "- ${name}"
+              done
+              echo ""
+            fi
+
+            # Full diff link
+            if [ -n "$PREV_STABLE_TAG" ]; then
+              echo "---"
+              echo "**Full changelog:** [\`${PREV_STABLE_TAG}\` → \`${CURRENT_TAG}\`](https://github.com/${REPO}/compare/${PREV_STABLE_TAG}...${CURRENT_TAG})"
+            fi
+
+          } > changelog.md
+
+          cat changelog.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: changelog.md
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          files: |
+            app/build/outputs/apk/release/tocacorrer-${{ github.ref_name }}.apk
+            app/build/outputs/apk/release/tocacorrer-${{ github.ref_name }}.apk.sha256
