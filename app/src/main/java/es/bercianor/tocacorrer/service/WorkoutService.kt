@@ -276,7 +276,7 @@ class WorkoutService : Service() {
                 }
 
                 // Update notification if workout is still active
-                if (!timerState.isCompleted) {
+                if (!timerState.isCompleted && _workoutStatus.value.isRunning) {
                     updateNotification()
                 }
             }
@@ -426,6 +426,8 @@ class WorkoutService : Service() {
 
         _workoutStatus.value = WorkoutStatus()
 
+        stopForeground(STOP_FOREGROUND_REMOVE)
+
         serviceScope.launch {
             ttsManager.announceWorkoutEnd(
                 distanceMeters = totalDistanceMeters.toDouble(),
@@ -433,7 +435,6 @@ class WorkoutService : Service() {
             )
             withContext(NonCancellable) {
                 saveFinalStats()
-                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
         }
@@ -548,7 +549,9 @@ class WorkoutService : Service() {
         ) }
 
         // Update notification with distance info
-        updateNotification()
+        if (_workoutStatus.value.isRunning) {
+            updateNotification()
+        }
     }
 
     /**
