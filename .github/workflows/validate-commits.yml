@@ -1,0 +1,36 @@
+name: Validate Conventional Commits
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+
+      - name: Install commitlint
+        run: npm install --save-dev @commitlint/config-conventional @commitlint/cli
+
+      - name: Create commitlint config
+        run: |
+          echo "module.exports = {" > commitlint.config.js
+          echo "  extends: ['@commitlint/config-conventional']," >> commitlint.config.js
+          echo "  rules: {" >> commitlint.config.js
+          echo "    'subject-case': [2, 'never', []]" >> commitlint.config.js
+          echo "  }" >> commitlint.config.js
+          echo "};" >> commitlint.config.js
+
+      - name: Lint commits
+        run: npx commitlint --from=$(git rev-list --max-parents=0 HEAD) --to=HEAD --verbose
