@@ -281,7 +281,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         .first()
                 }
                 clearGpsWaitState()
-                startWorkout(routine, noGps = true)
+                startWorkout(routine, noGps = false)
             } catch (e: IllegalStateException) {
                 clearGpsWaitState()
                 _state.value = _state.value.copy(error = "GPS is disabled. Please enable it in Settings.")
